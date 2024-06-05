@@ -8,6 +8,8 @@ from transformers import AutoTokenizer
 from datetime import datetime
 import os
 from pytorch_lightning.loggers import WandbLogger
+from omegaconf import OmegaConf
+
 
 os.environ["WANDB_API_KEY"] = "04cc10900943b2d11063303c05b967e980794041"
 
@@ -19,7 +21,7 @@ logging.basicConfig(format="%(asctime)s %(levelname)-8s %(message)s", level=logg
 def main(cfg) -> None:
     seed_everything(17)
     wandb_logger = WandbLogger(project="samolet")
-    wandb_logger.experiment.config.update(dict(cfg))
+    wandb_logger.experiment.config.update(OmegaConf.to_container(cfg))
     dm = MyDataModule(cfg)
     dm.setup()
     model = MyModel(cfg)

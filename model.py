@@ -5,6 +5,20 @@ from transformers import AutoModelForTokenClassification
 import numpy as np
 from sklearn.metrics import f1_score
 import torch
+import torch.nn.functional as F
+
+
+class DiceLoss(nn.Module):
+    def __init__(self, class_weights=[0.003, 1, 1, 2]):
+        super(DiceLoss, self).__init__()
+        self.register_buffer("class_weights", torch.Tensor(class_weights))
+
+    def forward(self, input, target):
+        probs = F.softmax(input, 1)
+        target = F.one_hot(target, 4)
+        tp = (probs * target).sum(0)
+        per_class = (2 * tp + 0.001) / (target.sum(0) + probs.sum(0) + 0.001)
+        return self.class_weights.sum() - (per_class * self.class_weights).sum()
 
 
 def average_per_word_logits(token_logits: torch.Tensor, words_mapping: torch.Tensor) -> torch.Tensor:
@@ -56,7 +70,8 @@ class MyModel(pl.LightningModule):
         self.model = AutoModelForTokenClassification.from_pretrained(
             cfg.model.name, num_labels=4, ignore_mismatched_sizes=True
         )
-        self.loss = nn.CrossEntropyLoss()
+        # self.loss = nn.CrossEntropyLoss()
+        self.loss = DiceLoss()
 
     def forward(self, batch):
         logits = self.model(
@@ -67,7 +82,11 @@ class MyModel(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         logits = self.forward(batch)
-        loss = self.loss(logits.reshape(-1, 4), batch["word_labels"].flatten())
+        logits = logits.reshape(-1, 4)
+        labels = batch["word_labels"].flatten()
+        logits = logits[labels != -100]
+        labels = labels[labels != -100]
+        loss = self.loss(logits, labels)
         self.train_loss += loss.item()
         self.train_loss_cnt += 1
         if self.train_loss_cnt == self.trainer.log_every_n_steps * self.trainer.accumulate_grad_batches:
@@ -78,10 +97,14 @@ class MyModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         logits = self.forward(batch)
-        loss = self.loss(logits.reshape(-1, 4), batch["word_labels"].flatten())
+        logits = logits.reshape(-1, 4)
+        labels = batch["word_labels"].flatten()
+        logits = logits[labels != -100]
+        labels = labels[labels != -100]
+        loss = self.loss(logits, labels)
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=False)
-        self.preds.append(logits.cpu().numpy().reshape(-1, 4))
-        self.labels.append(batch["word_labels"].cpu().numpy().flatten())
+        self.preds.append(logits.cpu().numpy())
+        self.labels.append(labels.cpu().numpy())
 
     def on_validation_epoch_start(self) -> None:
         self.preds = []
