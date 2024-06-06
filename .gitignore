@@ -2,3 +2,5 @@
 wandb
 __pycache__
 *.ipynb
+preds/
+lightning_logs/

@@ -6,10 +6,12 @@ import numpy as np
 from sklearn.metrics import f1_score
 import torch
 import torch.nn.functional as F
+from datetime import datetime
+import pandas as pd
 
 
 class DiceLoss(nn.Module):
-    def __init__(self, class_weights=[0.003, 1, 1, 2]):
+    def __init__(self, class_weights=[0.003, 1, 2, 2]):
         super(DiceLoss, self).__init__()
         self.register_buffer("class_weights", torch.Tensor(class_weights))
 
@@ -99,30 +101,42 @@ class MyModel(pl.LightningModule):
         logits = self.forward(batch)
         logits = logits.reshape(-1, 4)
         labels = batch["word_labels"].flatten()
+        text_ids = np.repeat(batch["text_ids"], batch["word_labels"].shape[1])
         logits = logits[labels != -100]
+        text_ids = text_ids[labels.cpu().numpy() != -100]
         labels = labels[labels != -100]
         loss = self.loss(logits, labels)
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=False)
         self.preds.append(logits.cpu().numpy())
         self.labels.append(labels.cpu().numpy())
+        self.text_ids.append(text_ids)
 
     def on_validation_epoch_start(self) -> None:
         self.preds = []
         self.labels = []
+        self.text_ids = []
 
     def on_validation_epoch_end(self) -> None:
         # if len(self.preds[0]) < 10:
         #     return
+        text_ids = np.concatenate(self.text_ids)
         preds = np.concatenate(self.preds)
         labels = np.concatenate(self.labels)
-        preds = preds[labels != -100]
-        labels = labels[labels != -100]
         f1s = f1_score(labels, preds.argmax(1), average=None, labels=[0, 1, 2, 3])
         self.log("val/f1_o", f1s[0], prog_bar=False)
         self.log("val/f1_bdiscount", f1s[1], prog_bar=False)
         self.log("val/f1_bvalue", f1s[2], prog_bar=False)
         self.log("val/f1_ivalue", f1s[3], prog_bar=False)
         self.log("val/f1", f1s[0] * 0.003 + f1s[1] * 1 + f1s[2] * 2 + f1s[3] * 2, prog_bar=True)
+        # if self.current_epoch == self.trainer.max_epochs - 1:
+        #     ckpt_name = (
+        #         self.cfg.model.name.lower().replace("/", "-")
+        #         + datetime.now().strftime("_%Y%m%d_%H%M%S")
+        #         + "fold%d" % self.cfg.data.fold
+        #     )
+        #     pd.DataFrame(
+        #         {"text_id": text_ids, "p0": preds[:, 0], "p1": preds[:, 1], "p2": preds[:, 2], "p3": preds[:, 3]}
+        #     ).to_parquet(f"preds/{ckpt_name}.pq")
 
     def configure_optimizers(self):
         def no_decay(n):

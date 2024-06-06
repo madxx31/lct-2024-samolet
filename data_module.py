@@ -54,7 +54,7 @@ class BucketBatchSampler(Sampler):
 
 
 class MyDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, tokenizer: AutoTokenizer):
+    def __init__(self, df: pd.DataFrame, tokenizer: AutoTokenizer, max_len):
         super().__init__()
         self.enc = tokenizer(
             df.processed_text.to_list(),
@@ -66,6 +66,8 @@ class MyDataset(Dataset):
         self.token_labels = []
         self.word_labels = []
         self.words_mapping = []
+        self.max_len = max_len
+        self.text_ids = df.index.values
 
         for target_dict, offsets, text in zip(
             df.target_labels_positions.values, self.enc["offset_mapping"], df.processed_text
@@ -105,10 +107,11 @@ class MyDataset(Dataset):
 
     def __getitem__(self, index):
         return {
-            "input_ids": self.enc["input_ids"][index],
-            "words_mapping": self.words_mapping[index],
-            "token_labels": self.token_labels[index],
-            "word_labels": self.word_labels[index],
+            "input_ids": self.enc["input_ids"][index][: self.max_len],
+            "words_mapping": self.words_mapping[index][: self.max_len],
+            "token_labels": self.token_labels[index][: self.max_len],
+            "word_labels": self.word_labels[index][: int(self.words_mapping[index][: self.max_len].max()) + 1],
+            "text_id": self.text_ids[index],
         }
 
     def get_lengths(self):
@@ -137,8 +140,8 @@ class MyDataModule(pl.LightningDataModule):
 
         tok = AutoTokenizer.from_pretrained(self.cfg.model.name, use_fast=True)
         self.pad_token_id = tok.pad_token_id
-        self.train_ds = MyDataset(tr[tr.fold != self.cfg.data.fold], tok)
-        self.val_ds = MyDataset(tr[tr.fold == self.cfg.data.fold], tok)
+        self.train_ds = MyDataset(tr[tr.fold != self.cfg.data.fold], tok, self.cfg.data.max_len)
+        self.val_ds = MyDataset(tr[tr.fold == self.cfg.data.fold], tok, self.cfg.data.max_len)
 
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         self.already_setup = True
@@ -189,15 +192,20 @@ class MyDataModule(pl.LightningDataModule):
             "words_mapping": torch.tensor(words_mapping, dtype=torch.long),
             "token_labels": torch.tensor(token_labels, dtype=torch.long),
             "word_labels": torch.tensor(word_labels, dtype=torch.long),
+            "text_ids": [i["text_id"] for i in batch],
         }
 
 
 if __name__ == "__main__":
     conf = OmegaConf.load("config.yaml")
+    conf.model.name = "ai-forever/ruRoberta-large"
     dm = MyDataModule(conf)
     dm.setup()
     print(pd.Series(dm.train_ds.get_lengths()).quantile([0.9, 0.95, 0.99, 1]))
     print(pd.Series(dm.val_ds.get_lengths()).quantile([0.9, 0.95, 0.99, 1]))
+    print(((pd.Series(dm.train_ds.get_lengths())) > 512).value_counts())
+    print(len(dm.train_ds))
+    print(sum([(1 if (i["token_labels"][512:] > 0).any() else 0) for i in dm.train_ds]))
     # ds = dm.train_ds
     # ex = ds[17]
     # df = pd.DataFrame(
