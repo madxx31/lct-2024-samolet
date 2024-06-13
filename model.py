@@ -119,24 +119,34 @@ class MyModel(pl.LightningModule):
     def on_validation_epoch_end(self) -> None:
         # if len(self.preds[0]) < 10:
         #     return
-        text_ids = np.concatenate(self.text_ids)
-        preds = np.concatenate(self.preds)
-        labels = np.concatenate(self.labels)
-        f1s = f1_score(labels, preds.argmax(1), average=None, labels=[0, 1, 2, 3])
+        self.text_ids = np.concatenate(self.text_ids)
+        self.preds = np.concatenate(self.preds)
+        self.labels = np.concatenate(self.labels)
+        f1s = f1_score(self.labels, self.preds.argmax(1), average=None, labels=[0, 1, 2, 3])
         self.log("val/f1_o", f1s[0], prog_bar=False)
         self.log("val/f1_bdiscount", f1s[1], prog_bar=False)
         self.log("val/f1_bvalue", f1s[2], prog_bar=False)
         self.log("val/f1_ivalue", f1s[3], prog_bar=False)
         self.log("val/f1", f1s[0] * 0.003 + f1s[1] * 1 + f1s[2] * 2 + f1s[3] * 2, prog_bar=True)
-        # if self.current_epoch == self.trainer.max_epochs - 1:
-        #     ckpt_name = (
-        #         self.cfg.model.name.lower().replace("/", "-")
-        #         + datetime.now().strftime("_%Y%m%d_%H%M%S")
-        #         + "fold%d" % self.cfg.data.fold
-        #     )
-        #     pd.DataFrame(
-        #         {"text_id": text_ids, "p0": preds[:, 0], "p1": preds[:, 1], "p2": preds[:, 2], "p3": preds[:, 3]}
-        #     ).to_parquet(f"preds/{ckpt_name}.pq")
+
+    def predict_step(self, batch, batch_idx):
+        logits = self.forward(batch)
+        logits = logits.reshape(-1, 4)
+        labels = batch["word_labels"].flatten()
+        text_ids = np.repeat(batch["text_ids"], batch["word_labels"].shape[1])
+        logits = logits[labels != -100]
+        text_ids = text_ids[labels.cpu().numpy() != -100]
+        labels = labels[labels != -100]
+        self.preds.append(logits.cpu().numpy())
+        self.labels.append(labels.cpu().numpy())
+        self.text_ids.append(text_ids)
+
+    def on_predict_epoch_start(self) -> None:
+        self.on_validation_epoch_start()
+
+    def on_predict_epoch_end(self) -> None:
+        self.text_ids = np.concatenate(self.text_ids)
+        self.preds = np.concatenate(self.preds)
 
     def configure_optimizers(self):
         def no_decay(n):

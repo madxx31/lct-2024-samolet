@@ -69,6 +69,9 @@ class MyDataset(Dataset):
         self.max_len = max_len
         self.text_ids = df.index.values
 
+        if "target_labels_positions" not in df.columns:
+            df["target_labels_positions"] = [{}] * len(df)
+
         for target_dict, offsets, text in zip(
             df.target_labels_positions.values, self.enc["offset_mapping"], df.processed_text
         ):
@@ -121,55 +124,11 @@ class MyDataset(Dataset):
         return len(self.enc["input_ids"])
 
 
-class MyDataModule(pl.LightningDataModule):
-    def __init__(self, cfg=None):
-        super().__init__()
-        self.cfg = cfg
-        self.already_setup = False
+class Collator:
+    def __init__(self, pad_token_id):
+        self.pad_token_id = pad_token_id
 
-    def setup(self, stage=None):
-        if self.already_setup:
-            return
-        tr = pd.read_csv("train_data.csv")
-        tr.target_labels_positions = tr.target_labels_positions.apply(lambda x: ast.literal_eval(x))
-        tr["strata"] = tr.target_labels_positions.apply(get_strata)
-        skf = StratifiedKFold(n_splits=5, random_state=17, shuffle=True)
-        tr["fold"] = 0
-        for fold, (trx, tex) in enumerate(skf.split(tr.index, tr.strata)):
-            tr.loc[tex, "fold"] = fold
-
-        tok = AutoTokenizer.from_pretrained(self.cfg.model.name, use_fast=True)
-        self.pad_token_id = tok.pad_token_id
-        self.train_ds = MyDataset(tr[tr.fold != self.cfg.data.fold], tok, self.cfg.data.max_len)
-        self.val_ds = MyDataset(tr[tr.fold == self.cfg.data.fold], tok, self.cfg.data.max_len)
-
-        os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        self.already_setup = True
-        self.tok = tok
-
-    def train_dataloader(self):
-        return DataLoader(
-            self.train_ds,
-            batch_sampler=BucketBatchSampler(
-                self.train_ds.get_lengths(), batch_size=self.cfg.data.train_batch_size, drop_last=True
-            ),
-            collate_fn=self.collator,
-            num_workers=self.cfg.data.num_workers,
-            pin_memory=True,
-        )
-
-    def val_dataloader(self):
-        return DataLoader(
-            self.val_ds,
-            shuffle=False,
-            batch_size=self.cfg.data.eval_batch_size,
-            collate_fn=self.collator,
-            num_workers=self.cfg.data.num_workers,
-            pin_memory=True,
-        )
-
-    def collator(self, batch):
-        # labels = -100 for word_mapping = -1
+    def __call__(self, batch):
         batch_size = len(batch)
         max_text_length = max([len(i["input_ids"]) for i in batch])
         max_word_count = max([len(i["word_labels"]) for i in batch])
@@ -194,6 +153,68 @@ class MyDataModule(pl.LightningDataModule):
             "word_labels": torch.tensor(word_labels, dtype=torch.long),
             "text_ids": [i["text_id"] for i in batch],
         }
+
+
+class MyDataModule(pl.LightningDataModule):
+    def __init__(self, cfg=None):
+        super().__init__()
+        self.cfg = cfg
+        self.already_setup = False
+
+    def setup(self, stage=None):
+        if self.already_setup:
+            return
+        tr = pd.read_csv("data/train_data.csv")
+        te = pd.read_csv("data/gt_test.csv")
+        tr.target_labels_positions = tr.target_labels_positions.apply(lambda x: ast.literal_eval(x))
+        tr["strata"] = tr.target_labels_positions.apply(get_strata)
+        skf = StratifiedKFold(n_splits=5, random_state=17, shuffle=True)
+        tr["fold"] = 0
+        for fold, (trx, tex) in enumerate(skf.split(tr.index, tr.strata)):
+            tr.loc[tex, "fold"] = fold
+
+        tok = AutoTokenizer.from_pretrained(self.cfg.model.name, use_fast=True)
+        self.pad_token_id = tok.pad_token_id
+        self.train_ds = MyDataset(tr[tr.fold != self.cfg.data.fold], tok, self.cfg.data.max_len)
+        if self.cfg.data.fold != -1:
+            self.val_ds = MyDataset(tr[tr.fold == self.cfg.data.fold], tok, self.cfg.data.max_len)
+        self.test_ds = MyDataset(te, tok, self.cfg.data.max_len)
+
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        self.already_setup = True
+        self.tok = tok
+
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_ds,
+            batch_sampler=BucketBatchSampler(
+                self.train_ds.get_lengths(), batch_size=self.cfg.data.train_batch_size, drop_last=True
+            ),
+            collate_fn=Collator(self.pad_token_id),
+            num_workers=self.cfg.data.num_workers,
+            pin_memory=True,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_ds,
+            shuffle=False,
+            batch_size=self.cfg.data.eval_batch_size,
+            collate_fn=Collator(self.pad_token_id),
+            num_workers=self.cfg.data.num_workers,
+            pin_memory=True,
+        )
+
+    def predict_dataloader(self):
+        return DataLoader(
+            self.test_ds,
+            shuffle=False,
+            drop_last=False,
+            batch_size=self.cfg.data.eval_batch_size,
+            collate_fn=Collator(self.pad_token_id),
+            num_workers=self.cfg.data.num_workers,
+            pin_memory=True,
+        )
 
 
 if __name__ == "__main__":
