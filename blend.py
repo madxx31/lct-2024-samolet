@@ -20,6 +20,9 @@ preds["word_num"] = preds.groupby("text_id").p0.cumcount()
 preds[["p0", "p1", "p2", "p3"]] = softmax(preds[["p0", "p1", "p2", "p3"]], 1)
 preds.columns = ["p0_rubert", "p1_rubert", "p2_rubert", "p3_rubert", "text_id", "word_num"]
 te = te.merge(preds, on=["text_id", "word_num"], how="left")
+# rubert=deberta where rubert is unknown
+for i in range(4):
+    te.loc[te["p%d_rubert" % i].isnull(), "p%d_rubert" % i] = te.loc[te["p%d_rubert" % i].isnull(), "p%d_deberta" % i]
 
 w = 0.47
 te["p0"] = w * te.p0_rubert + (1 - w) * te.p0_deberta
